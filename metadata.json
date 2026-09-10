@@ -1,0 +1,6 @@
+{
+  "name": "ElderCare AI",
+  "description": "ElderCare AI proactively calls elderly family members, talks naturally in Hindi, Hinglish and English, helps track medicines and health readings, and keeps caregivers informed.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
