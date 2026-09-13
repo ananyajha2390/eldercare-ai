@@ -117,6 +117,9 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isCallActiveRef = useRef<boolean>(false);
   const isListeningRef = useRef<boolean>(false);
+  const isProcessingRef = useRef<boolean>(false);
+  const hasGreetedRef = useRef<boolean>(false);
+  const lastProcessedUtteranceRef = useRef<string>('');
   const currentUtteranceRef = useRef<string>('');
   const messagesRef = useRef<ChatTurn[]>([]);
 
@@ -134,7 +137,10 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
   const cleanupAll = () => {
     isCallActiveRef.current = false;
     isListeningRef.current = false;
+    isProcessingRef.current = false;
+    hasGreetedRef.current = false;
     currentUtteranceRef.current = '';
+    lastProcessedUtteranceRef.current = '';
 
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     if (ringingTimeoutRef.current) clearTimeout(ringingTimeoutRef.current);
@@ -259,7 +265,8 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 
   // When call connects: start stopwatch and trigger initial AI greeting (ONLY ONCE)
   useEffect(() => {
-    if (stage === 'connected') {
+    if (stage === 'connected' && !hasGreetedRef.current) {
+      hasGreetedRef.current = true;
       isCallActiveRef.current = true;
 
       // Start stopwatch timer
@@ -279,6 +286,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         timestamp: 'Just now',
       };
 
+      messagesRef.current = [greetingTurn];
       setMessages([greetingTurn]);
       setVoiceState('AI Speaking');
 
@@ -300,7 +308,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
     // If speaker is muted, skip speech synthesis and enter listening after 1 second
     if (!isSpeakerOn) {
       setTimeout(() => {
-        if (isCallActiveRef.current) {
+        if (isCallActiveRef.current && !isProcessingRef.current) {
           enterListeningMode();
         }
       }, 1000);
@@ -316,15 +324,15 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         }
       },
       () => {
-        // onEnd -> Automatically enter LISTENING mode (Requirement 4 & 9)
-        if (isCallActiveRef.current) {
+        // onEnd -> Automatically enter LISTENING mode (Continuous Conversation Loop)
+        if (isCallActiveRef.current && !isProcessingRef.current) {
           enterListeningMode();
         }
       },
       (err) => {
         // onError -> Also transition to listening
         console.warn('Speech synthesis playback notice:', err);
-        if (isCallActiveRef.current) {
+        if (isCallActiveRef.current && !isProcessingRef.current) {
           enterListeningMode();
         }
       }
@@ -333,7 +341,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 
   // Enters listening mode and continuously captures user speech
   const enterListeningMode = () => {
-    if (!isCallActiveRef.current || isMuted) {
+    if (!isCallActiveRef.current || isMuted || isProcessingRef.current) {
       setVoiceState('Listening...');
       return;
     }
@@ -348,12 +356,12 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 
   // Start continuous speech recognition with debounce silence detection
   const startContinuousRecognition = () => {
-    if (!isCallActiveRef.current || isMuted) return;
+    if (!isCallActiveRef.current || isMuted || isProcessingRef.current) return;
 
     try {
       voiceService.startListening(
-        (transcript: string, _isFinal: boolean) => {
-          if (!isCallActiveRef.current) return;
+        (transcript: string, isFinal: boolean) => {
+          if (!isCallActiveRef.current || isProcessingRef.current) return;
 
           const trimmed = transcript.trim();
           if (!trimmed) return;
@@ -362,14 +370,15 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
           currentUtteranceRef.current = trimmed;
           setInterimUserSpeech(trimmed);
 
-          // Natural conversational pause: 1.4s of silence finishes turn
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
+          // Fast natural pause: 750ms if browser marked as final, 1200ms if interim speech
+          const delay = isFinal ? 750 : 1200;
           silenceTimerRef.current = setTimeout(() => {
-            if (isCallActiveRef.current && currentUtteranceRef.current.trim()) {
+            if (isCallActiveRef.current && !isProcessingRef.current && currentUtteranceRef.current.trim()) {
               handleSpeechFinished(currentUtteranceRef.current.trim());
             }
-          }, 1400);
+          }, delay);
         },
         (err) => {
           const errType = err?.error || '';
@@ -379,9 +388,9 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
             console.warn('Recognition event notice:', errType);
           }
           // If error occurs and not permanently blocked, keep listening mode active
-          if (isCallActiveRef.current && isListeningRef.current && !isMuted && errType !== 'not-allowed') {
+          if (isCallActiveRef.current && isListeningRef.current && !isMuted && !isProcessingRef.current && errType !== 'not-allowed') {
             setTimeout(() => {
-              if (isCallActiveRef.current && isListeningRef.current && !isMuted) {
+              if (isCallActiveRef.current && isListeningRef.current && !isMuted && !isProcessingRef.current) {
                 startContinuousRecognition();
               }
             }, 600);
@@ -390,9 +399,9 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         () => {
           // onEnd
           // If recognition ended but we are still in listening mode, restart seamlessly
-          if (isCallActiveRef.current && isListeningRef.current && !isMuted) {
+          if (isCallActiveRef.current && isListeningRef.current && !isMuted && !isProcessingRef.current) {
             setTimeout(() => {
-              if (isCallActiveRef.current && isListeningRef.current && !isMuted) {
+              if (isCallActiveRef.current && isListeningRef.current && !isMuted && !isProcessingRef.current) {
                 startContinuousRecognition();
               }
             }, 250);
@@ -406,10 +415,19 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 
   // When user speech is completed, finalize utterance and send to Gemini
   const handleSpeechFinished = (userSpeechText: string) => {
-    if (!userSpeechText.trim() || !isCallActiveRef.current) return;
+    const trimmed = userSpeechText.trim();
+    if (!trimmed || !isCallActiveRef.current) return;
+
+    if (isProcessingRef.current) {
+      console.log('[RealCareCallModal] Already processing a request, ignoring duplicate trigger:', trimmed);
+      return;
+    }
 
     // Clear timers and stop listener while processing
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
     isListeningRef.current = false;
     currentUtteranceRef.current = '';
 
@@ -417,11 +435,20 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
       voiceService.stopListening();
     } catch {}
 
-    processUserUtterance(userSpeechText.trim());
+    processUserUtterance(trimmed);
   };
 
   // Process user utterance through Gemini AI
-  const processUserUtterance = async (userText: string) => {
+  const processUserUtterance = async (userText: string, isRetry: boolean = false) => {
+    if (!isCallActiveRef.current) return;
+    if (isProcessingRef.current && !isRetry) {
+      console.log('[RealCareCallModal] Already processing, skipping duplicate call for:', userText);
+      return;
+    }
+
+    isProcessingRef.current = true;
+    lastProcessedUtteranceRef.current = userText;
+
     // 1. Show Processing... state (Requirement: "Processing...")
     setVoiceState('Processing...');
     setInterimUserSpeech('');
@@ -429,16 +456,20 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
     setApiError(null);
     setLastUserUtterance(userText);
 
-    // 2. Append real user response to transcript
-    const userTurn: ChatTurn = {
-      id: `usr-${Date.now()}`,
-      speaker: 'user',
-      text: userText,
-      timestamp: 'Just now',
-    };
-
-    const currentHistory = [...messagesRef.current, userTurn];
-    setMessages(currentHistory);
+    // 2. Append real user response to transcript (prevent duplicate turns on retry)
+    let currentHistory = [...messagesRef.current];
+    const lastMsg = currentHistory[currentHistory.length - 1];
+    if (!lastMsg || lastMsg.speaker !== 'user' || lastMsg.text !== userText) {
+      const userTurn: ChatTurn = {
+        id: `usr-${Date.now()}`,
+        speaker: 'user',
+        text: userText,
+        timestamp: 'Just now',
+      };
+      currentHistory = [...currentHistory, userTurn];
+      messagesRef.current = currentHistory;
+      setMessages(currentHistory);
+    }
 
     // 3. Quick client-side vital inspection for instant visual confirmation
     const lower = userText.toLowerCase();
@@ -451,35 +482,52 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
     }
     if (/theek|achha|good|fine|badhiya|khush|sahi/i.test(lower)) {
       setHealthStatus((prev) => ({ ...prev, mood: 'good' }));
-    } else if (/weak|weakness|kamzor|dard|pain|thakaan/i.test(lower)) {
+    } else if (/weak|weakness|kamzor|dard|pain|thakaan|chakkar/i.test(lower)) {
       setHealthStatus((prev) => ({ ...prev, mood: 'tired' }));
     }
 
-    // 4. Send to Gemini AI brain (/api/chat)
+    // 4. Conversation history turns to send to Gemini (prior conversation turns)
+    const historyPayload = currentHistory
+      .slice(0, -1)
+      .map((m) => ({
+        role: m.speaker === 'ai' ? 'assistant' : 'user',
+        text: m.text,
+      }));
+
+    console.log('[RealCareCallModal] Gemini API request started');
+    console.log('[RealCareCallModal] User text being sent:', userText);
+    console.log('[RealCareCallModal] Conversation history turns count:', historyPayload.length);
+
+    const startTime = Date.now();
+
+    // 5. Send to Gemini AI brain (/api/chat)
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userText,
-          history: currentHistory.map((m) => ({
-            role: m.speaker === 'ai' ? 'assistant' : 'user',
-            text: m.text,
-          })),
+          history: historyPayload,
           userName: currentUserName,
           language: 'hinglish',
           aiMode: 'gemini',
         }),
       });
 
+      console.log(`[RealCareCallModal] HTTP response status: ${response.status} in ${Date.now() - startTime}ms`);
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP ${response.status}`);
+        const errMsg = errorData.error || errorData.details || `HTTP ${response.status}`;
+        console.error('[RealCareCallModal] API error status:', response.status, 'details:', errMsg);
+        throw new Error(errMsg);
       }
 
       const data = await response.json();
-      const aiReply = data.reply || '';
-      const speechText = data.speechText || aiReply;
+      console.log('[RealCareCallModal] Gemini response received in', Date.now() - startTime, 'ms:', data);
+
+      const aiReply = (data.reply || '').trim();
+      const speechText = (data.speechText || aiReply).trim();
 
       if (!aiReply) {
         throw new Error('Empty response from ElderCare AI');
@@ -511,7 +559,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 
       if (!isCallActiveRef.current) return;
 
-      // 5. Append AI turn
+      // Append AI turn
       const aiTurn: ChatTurn = {
         id: `ai-${Date.now()}`,
         speaker: 'ai',
@@ -519,17 +567,24 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         timestamp: 'Just now',
       };
 
-      setMessages((prev) => [...prev, aiTurn]);
+      const updatedHistory = [...messagesRef.current, aiTurn];
+      messagesRef.current = updatedHistory;
+      setMessages(updatedHistory);
 
-      // 6. Speak Gemini's response using browser speech and show "AI Responding" state
+      isProcessingRef.current = false;
+
+      // Speak Gemini's response using browser speech and show "AI Responding" state
+      // Continuous loop: speakAiTurn onEnd automatically activates listening mode!
       speakAiTurn(speechText || aiReply, 'AI Responding');
     } catch (err: any) {
-      console.warn('Gemini chat request error:', err);
+      console.error('[RealCareCallModal] Gemini chat request failed:', err);
+      isProcessingRef.current = false;
       if (!isCallActiveRef.current) return;
 
-      // Do NOT invent fake responses. Display clear retry option.
+      // Do NOT invent fake responses. Display clear retry option only on real API failure.
       setApiError('ElderCare AI connection issue. Tap Retry below to re-send.');
       setVoiceState('Listening...');
+      enterListeningMode();
     }
   };
 
@@ -906,7 +961,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
                     type="button"
                     onClick={() => {
                       setApiError(null);
-                      processUserUtterance(lastUserUtterance);
+                      processUserUtterance(lastUserUtterance, true);
                     }}
                     className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-semibold text-[11px] transition-colors cursor-pointer"
                   >
@@ -925,7 +980,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
                     {voiceState === 'Listening...'
                       ? 'Microphone active • Speak your answer naturally'
                       : voiceState === 'Processing...'
-                      ? 'Gemini is processing your response...'
+                      ? 'Processing...'
                       : 'ElderCare AI speaking...'}
                   </span>
                 </span>

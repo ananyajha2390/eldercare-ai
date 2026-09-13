@@ -322,15 +322,24 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
+    console.error('[Server /api/chat] Error: GEMINI_API_KEY is not configured in process.env');
     return res.status(500).json({ error: 'GEMINI_API_KEY is not configured in process.env' });
   }
 
   const ai = getGeminiClient();
   if (!ai) {
+    console.error('[Server /api/chat] Error: Failed to initialize Gemini client');
     return res.status(500).json({ error: 'Failed to initialize Gemini client' });
   }
 
+  const startTime = Date.now();
+  console.log(`[Server /api/chat] Request started. User: "${activeName}", message: "${message}", history count: ${history.length}`);
+
   try {
+    const formattedHistory = Array.isArray(history) && history.length > 0
+      ? history.map((h: any) => `${h.role === 'user' ? 'User' : 'ElderCare'}: ${h.text}`).join('\n')
+      : '(No previous turns in this conversation)';
+
     const prompt = `${getEldercareSystemInstruction(activeName)}
 
 CONVERSATION CONTEXT & INSTRUCTIONS:
@@ -342,7 +351,7 @@ CONVERSATION CONTEXT & INSTRUCTIONS:
 - NEVER invent user words or pretend they said something they did not.
 
 Recent conversation history:
-${history.map((h: any) => `${h.role === 'user' ? 'User' : 'ElderCare'}: ${h.text}`).join('\n')}
+${formattedHistory}
 
 User says: "${message}"
 
@@ -362,13 +371,14 @@ Return your response in JSON format with fields:
   }
 }`;
 
-    // Candidate models in preference order, falling back if temporary high demand occurs
-    const candidateModels = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
+    // Candidate models in preference order (gemini-3.8-flash is the primary model)
+    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
     let lastError: any = null;
     let rawText = '';
 
     for (const modelName of candidateModels) {
       try {
+        console.log(`[Server /api/chat] Invoking Gemini model: ${modelName}`);
         const response = await ai.models.generateContent({
           model: modelName,
           contents: prompt,
@@ -378,11 +388,28 @@ Return your response in JSON format with fields:
         });
         if (response && response.text) {
           rawText = response.text;
+          console.log(`[Server /api/chat] Model ${modelName} completed in ${Date.now() - startTime}ms`);
           break;
         }
       } catch (e: any) {
         lastError = e;
-        console.warn(`Model ${modelName} call notice, checking next available model:`, e?.message || e);
+        console.warn(`[Server /api/chat] Notice for model ${modelName}:`, e?.message || e);
+      }
+    }
+
+    if (!rawText) {
+      // Fallback attempt without strict application/json mimeType
+      try {
+        console.log('[Server /api/chat] Attempting text fallback with gemini-3.8-flash...');
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: prompt,
+        });
+        if (response && response.text) {
+          rawText = response.text;
+        }
+      } catch (e: any) {
+        lastError = e;
       }
     }
 
@@ -392,13 +419,30 @@ Return your response in JSON format with fields:
 
     let parsed: any = {};
     try {
-      parsed = JSON.parse(rawText);
+      const cleaned = rawText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+      parsed = JSON.parse(cleaned);
     } catch {
-      parsed = { reply: rawText, speechText: rawText };
+      const replyMatch = rawText.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (replyMatch) {
+        parsed = { reply: replyMatch[1].replace(/\\"/g, '"'), speechText: replyMatch[1].replace(/\\"/g, '"') };
+      } else {
+        parsed = { reply: rawText, speechText: rawText };
+      }
     }
 
-    const reply = parsed.reply || rawText;
-    const speechText = parsed.speechText || reply;
+    let reply = (parsed.reply || rawText || '').trim();
+    if (reply.startsWith('{') && reply.endsWith('}')) {
+      try {
+        const inner = JSON.parse(reply);
+        if (inner.reply) reply = inner.reply;
+      } catch {}
+    }
+    if (!reply) {
+      reply = `Namaste ${honorific}, main aapki baat samajh raha hoon. Kripya batayein, aap kaisa mehsoos kar rahe hain?`;
+    }
+    const speechText = (parsed.speechText || reply).trim();
+
+    console.log(`[Server /api/chat] Response ready in ${Date.now() - startTime}ms: "${reply}"`);
 
     res.json({
       reply,
@@ -407,7 +451,7 @@ Return your response in JSON format with fields:
       source: 'gemini',
     });
   } catch (err: any) {
-    console.error('Gemini call failed:', err);
+    console.error('[Server /api/chat] Request failed:', err);
     return res.status(500).json({
       error: err.message || 'Gemini processing error',
       details: String(err),
