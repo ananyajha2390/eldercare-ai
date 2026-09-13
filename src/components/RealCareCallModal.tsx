@@ -27,6 +27,12 @@ import { ElderlyProfile, FamilyMember, CallHistoryItem } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { extractFirstName, getHonorificName } from '../lib/nameUtils';
 import { voiceService } from '../services/voice';
+import {
+  extractStructuredHealth,
+  extractLocallyStructured,
+  StructuredHealthExtraction,
+} from '../services/healthExtractionService';
+import { familyDataService } from '../lib/familyDataService';
 
 interface RealCareCallModalProps {
   isOpen: boolean;
@@ -53,6 +59,8 @@ type VoiceState = 'AI Speaking' | 'Listening...' | 'Processing...' | 'AI Respond
 export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
   isOpen,
   onClose,
+  elderlyProfile,
+  familyMembers,
   onCallCompleted,
   onViewDashboard,
 }) => {
@@ -104,14 +112,16 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 
   // Live AI Health Check clinical telemetry panel
   const [healthStatus, setHealthStatus] = useState<{
-    mood: 'analyzing' | 'good' | 'normal' | 'tired' | 'unwell';
+    mood: 'analyzing' | 'good' | 'normal' | 'tired' | 'unwell' | 'low' | string;
     medication: 'checking' | 'taken' | 'pending';
     bp: string;
+    sugar: string;
     followUp: 'evaluating' | 'none' | 'monitor';
   }>({
     mood: 'analyzing',
     medication: 'checking',
     bp: 'Pending...',
+    sugar: 'Pending...',
     followUp: 'evaluating',
   });
 
@@ -274,6 +284,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         mood: 'analyzing',
         medication: 'checking',
         bp: 'Pending...',
+        sugar: 'Pending...',
         followUp: 'evaluating',
       });
 
@@ -572,18 +583,22 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
     }
 
     // 3. Quick client-side vital inspection for instant visual confirmation
-    const lower = userText.toLowerCase();
-    const bpMatch = userText.match(/(\d{2,3})\s*(?:\/|by)\s*(\d{2,3})/i);
-    if (bpMatch) {
-      setHealthStatus((prev) => ({ ...prev, bp: `${bpMatch[1]}/${bpMatch[2]}` }));
+    const liveExtracted = extractLocallyStructured(userText);
+    console.log('[RealCareCallModal] Live user utterance extracted:', liveExtracted);
+    if (liveExtracted.blood_pressure) {
+      setHealthStatus((prev) => ({ ...prev, bp: liveExtracted.blood_pressure! }));
     }
-    if (/dawai|medicine|goli|tablet|pill|le li|taken/i.test(lower)) {
+    if (liveExtracted.blood_sugar) {
+      setHealthStatus((prev) => ({ ...prev, sugar: `${liveExtracted.blood_sugar} mg/dL` }));
+    }
+    if (liveExtracted.medication_status === 'taken') {
       setHealthStatus((prev) => ({ ...prev, medication: 'taken' }));
     }
-    if (/theek|achha|good|fine|badhiya|khush|sahi/i.test(lower)) {
-      setHealthStatus((prev) => ({ ...prev, mood: 'good' }));
-    } else if (/weak|weakness|kamzor|dard|pain|thakaan|chakkar/i.test(lower)) {
-      setHealthStatus((prev) => ({ ...prev, mood: 'tired' }));
+    if (liveExtracted.mood) {
+      setHealthStatus((prev) => ({ ...prev, mood: liveExtracted.mood! }));
+    }
+    if (liveExtracted.check_in_completed) {
+      setHealthStatus((prev) => ({ ...prev, followUp: 'none' }));
     }
 
     // 4. Conversation history turns to send to Gemini (prior conversation turns)
@@ -638,12 +653,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         if (data.extracted.mood) {
           setHealthStatus((prev) => ({
             ...prev,
-            mood:
-              data.extracted.mood === 'good'
-                ? 'good'
-                : data.extracted.mood === 'unwell'
-                ? 'unwell'
-                : 'normal',
+            mood: data.extracted.mood,
           }));
         }
         if (data.extracted.medicationStatus === 'taken') {
@@ -651,6 +661,9 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         }
         if (data.extracted.bloodPressure) {
           setHealthStatus((prev) => ({ ...prev, bp: data.extracted.bloodPressure }));
+        }
+        if (data.extracted.bloodSugar) {
+          setHealthStatus((prev) => ({ ...prev, sugar: data.extracted.bloodSugar }));
         }
         if (data.extracted.alertSeverity === 'normal') {
           setHealthStatus((prev) => ({ ...prev, followUp: 'none' }));
@@ -725,50 +738,93 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
   };
 
   // End Call button handler (Requirement 17 & "clean shutdown")
-  const handleEndCall = () => {
+  const handleEndCall = async () => {
     cleanupAll();
 
-    setHealthStatus((prev) => ({
-      mood: prev.mood === 'analyzing' ? 'good' : prev.mood,
-      medication: prev.medication === 'checking' ? 'taken' : prev.medication,
-      bp: prev.bp === 'Pending...' ? 'Normal (128/82)' : prev.bp,
-      followUp: 'none',
-    }));
+    const currentTranscript = messagesRef.current;
+    console.log('[RealCareCallModal] Ending call, performing structured health extraction on transcript...');
+    console.log('[RealCareCallModal] Transcript turns:', currentTranscript.length);
+
+    // Run structured health extraction on complete transcript
+    const extraction: StructuredHealthExtraction = await extractStructuredHealth(currentTranscript);
+    console.log('[RealCareCallModal] Extracted clinical health data:', extraction);
+
+    // Update UI telemetry state with REAL extracted data - NEVER inventing fake readings
+    setHealthStatus({
+      mood: extraction.mood || 'normal',
+      medication: extraction.medication_status === 'taken' ? 'taken' : 'pending',
+      bp: extraction.blood_pressure || (extraction.systolic_bp && extraction.diastolic_bp ? `${extraction.systolic_bp}/${extraction.diastolic_bp}` : 'Pending...'),
+      sugar: extraction.blood_sugar ? `${extraction.blood_sugar} mg/dL` : 'Pending...',
+      followUp: extraction.check_in_completed ? 'none' : 'evaluating',
+    });
 
     setStage('summary');
 
-    // Notify parent app of completed real multi-turn conversation
+    // Build real health events array strictly from actual extracted data
+    const healthEvents: { type: string; value: string; isUnusual?: boolean }[] = [];
+    if (extraction.systolic_bp && extraction.diastolic_bp) {
+      healthEvents.push({
+        type: 'Blood Pressure',
+        value: `${extraction.systolic_bp} / ${extraction.diastolic_bp}`,
+        isUnusual: extraction.is_unusual,
+      });
+    }
+    if (extraction.blood_sugar) {
+      healthEvents.push({
+        type: 'Blood Sugar',
+        value: `${extraction.blood_sugar} mg/dL`,
+        isUnusual: extraction.blood_sugar >= 200 || extraction.blood_sugar <= 70,
+      });
+    }
+
+    const completedCall: CallHistoryItem = {
+      id: `call-${Date.now()}`,
+      timestamp: 'Just now',
+      title: `AI Care Check-in with ${userHonorific}`,
+      status: 'completed',
+      duration: formatTimer(Math.max(durationSeconds, 15)),
+      summary: extraction.summary || `Two-way conversational AI check-in completed with ${currentUserName}. Senior discussed health status, confirmed routine, and received guidance.`,
+      caregiverSummary: `Continuous voice conversation logged with ${currentUserName}. Vitals recorded.`,
+      transcript: currentTranscript.map((m) => ({
+        role: m.speaker === 'ai' ? ('ai' as const) : ('user' as const),
+        text: m.text,
+        time: m.timestamp,
+      })),
+      healthEvents,
+      medicationEvents: extraction.medication_status === 'taken' ? [
+        {
+          name: 'Daily Care Check-in',
+          status: 'confirmed' as const,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        },
+      ] : [],
+      wellbeingObservation: extraction.mood ? `Reported mood: ${extraction.mood}.` : `Check-in completed.`,
+      alertsGenerated: [],
+    };
+
+    // Attach structured extracted data for parent component
+    (completedCall as any).extractedData = extraction;
+
+    // Persist directly to Supabase if user is logged in
+    if (user?.id) {
+      try {
+        console.log('[RealCareCallModal] Persisting post-call data to Supabase for user:', user.id);
+        const result = await familyDataService.savePostCallHealthData({
+          ownerId: user.id,
+          elderlyId: elderlyProfile?.id || null,
+          durationSeconds: Math.max(durationSeconds, 15),
+          summary: completedCall.summary,
+          transcript: completedCall.transcript,
+          extracted: extraction,
+        });
+        console.log('[RealCareCallModal] Post-call data saved to Supabase successfully:', result);
+      } catch (saveErr) {
+        console.error('[RealCareCallModal] Error saving post-call data to Supabase:', saveErr);
+      }
+    }
+
+    // Notify parent app
     if (onCallCompleted) {
-      const completedCall: CallHistoryItem = {
-        id: `call-${Date.now()}`,
-        timestamp: 'Just now',
-        title: `AI Care Check-in with ${userHonorific}`,
-        status: 'completed',
-        duration: formatTimer(Math.max(durationSeconds, 15)),
-        summary: `Two-way conversational AI check-in completed with ${currentUserName}. Senior discussed health status, confirmed routine, and received guidance.`,
-        caregiverSummary: `Continuous voice conversation logged with ${currentUserName}. Vitals within baseline. No emergency escalation needed.`,
-        transcript: messagesRef.current.map((m) => ({
-          role: m.speaker === 'ai' ? ('ai' as const) : ('user' as const),
-          text: m.text,
-          time: m.timestamp,
-        })),
-        healthEvents: [
-          {
-            type: 'Blood Pressure',
-            value: healthStatus.bp !== 'Pending...' ? healthStatus.bp : '128 / 82',
-            isUnusual: false,
-          },
-        ],
-        medicationEvents: [
-          {
-            name: 'Daily Care Check-in',
-            status: 'confirmed' as const,
-            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          },
-        ],
-        wellbeingObservation: `Two-way Gemini voice conversation with ${currentUserName}.`,
-        alertsGenerated: [],
-      };
       onCallCompleted(completedCall);
     }
   };
@@ -787,6 +843,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
       mood: 'analyzing',
       medication: 'checking',
       bp: 'Pending...',
+      sugar: 'Pending...',
       followUp: 'evaluating',
     });
     playRingtone();
@@ -1162,9 +1219,17 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
                       <Check className="w-3 h-3" />
                       <span>Good</span>
                     </span>
+                  ) : healthStatus.mood === 'low' ? (
+                    <span className="font-semibold text-amber-400 flex items-center space-x-1 text-[11px]">
+                      <span>Low</span>
+                    </span>
                   ) : healthStatus.mood === 'tired' || healthStatus.mood === 'unwell' ? (
                     <span className="font-semibold text-amber-400 flex items-center space-x-1 text-[11px]">
                       <span>Noted (Weak)</span>
+                    </span>
+                  ) : healthStatus.mood !== 'analyzing' ? (
+                    <span className="font-semibold text-emerald-400 capitalize text-[11px]">
+                      {healthStatus.mood}
                     </span>
                   ) : (
                     <span className="text-slate-400 font-mono text-[11px]">
@@ -1206,8 +1271,23 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
                   </span>
                 </div>
 
-                {/* Follow-up */}
+                {/* Blood Sugar Reading */}
                 <div className="flex items-center justify-between p-1.5 rounded-xl bg-slate-950/60 border border-slate-800/60">
+                  <span className="text-slate-400 flex items-center space-x-1">
+                    <Activity className="w-3 h-3 text-slate-400" />
+                    <span>Sugar</span>
+                  </span>
+                  <span
+                    className={`font-semibold text-[11px] ${
+                      healthStatus.sugar !== 'Pending...' ? 'text-emerald-400' : 'text-slate-500 font-mono'
+                    }`}
+                  >
+                    {healthStatus.sugar}
+                  </span>
+                </div>
+
+                {/* Follow-up */}
+                <div className="col-span-2 flex items-center justify-between p-1.5 rounded-xl bg-slate-950/60 border border-slate-800/60">
                   <span className="text-slate-400 flex items-center space-x-1">
                     <ShieldCheck className="w-3 h-3 text-slate-400" />
                     <span>Follow-up</span>
@@ -1350,7 +1430,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
                   <div>
                     <span className="text-[10px] text-slate-400 block">Health Reading</span>
                     <span className="text-sm font-bold text-slate-100">
-                      {healthStatus.bp !== 'Pending...' ? healthStatus.bp : 'Normal (128/82)'}
+                      {healthStatus.bp !== 'Pending...' ? healthStatus.bp : healthStatus.sugar !== 'Pending...' ? healthStatus.sugar : 'Check-in completed'}
                     </span>
                   </div>
                 </div>

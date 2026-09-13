@@ -30,15 +30,23 @@ export const DailyAISummary: React.FC<DailyAISummaryProps> = ({
   caregiverName,
   hasRealData = false,
 }) => {
+  const hasAnyData = Boolean(
+    hasRealData ||
+    currentBP ||
+    currentSugar ||
+    (lastCheckIn && lastCheckIn !== 'No call today' && lastCheckIn !== 'None today') ||
+    (moodText && moodText !== 'No data' && moodText !== 'No check-in')
+  );
+
   const [summaryText, setSummaryText] = useState<string>(
-    hasRealData
+    hasAnyData
       ? 'Synthesizing today\'s health updates...'
       : 'No health or check-in data has been recorded today.'
   );
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    if (!hasRealData) {
+    if (!hasAnyData) {
       setSummaryText('No health or check-in data has been recorded today.');
       return;
     }
@@ -69,10 +77,10 @@ export const DailyAISummary: React.FC<DailyAISummaryProps> = ({
     };
 
     loadSummary();
-  }, [hasRealData, currentBP, currentSugar, medsTakenText, moodText, lastCheckIn, elderlyName, caregiverName]);
+  }, [hasAnyData, currentBP, currentSugar, medsTakenText, moodText, lastCheckIn, elderlyName, caregiverName]);
 
   const handleRegenerate = async () => {
-    if (!hasRealData) {
+    if (!hasAnyData) {
       setSummaryText('No health or check-in data has been recorded today.');
       return;
     }

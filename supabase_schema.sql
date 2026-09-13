@@ -160,3 +160,191 @@ drop trigger if exists set_profiles_updated_at on public.profiles;
 create trigger set_profiles_updated_at
   before update on public.profiles
   for each row execute function public.update_updated_at_column();
+
+-- ==============================================================================
+-- 7. Elderly Profiles Table
+-- ==============================================================================
+create table if not exists public.elderly_profiles (
+  id uuid primary key default uuid_generate_v4(),
+  owner_id uuid references auth.users(id) on delete cascade not null,
+  name text not null,
+  relationship text default 'Parent',
+  age integer default 70,
+  phone text,
+  address text,
+  preferred_language text default 'hinglish',
+  created_at timestamptz default now() not null,
+  updated_at timestamptz default now() not null
+);
+
+alter table public.elderly_profiles enable row level security;
+
+create policy "Users can view elderly profiles they own"
+  on public.elderly_profiles for select
+  using (auth.uid() = owner_id);
+
+create policy "Users can insert elderly profiles they own"
+  on public.elderly_profiles for insert
+  with check (auth.uid() = owner_id);
+
+create policy "Users can update elderly profiles they own"
+  on public.elderly_profiles for update
+  using (auth.uid() = owner_id);
+
+create policy "Users can delete elderly profiles they own"
+  on public.elderly_profiles for delete
+  using (auth.uid() = owner_id);
+
+-- ==============================================================================
+-- 8. Family Members Table
+-- ==============================================================================
+create table if not exists public.family_members (
+  id uuid primary key default uuid_generate_v4(),
+  owner_id uuid references auth.users(id) on delete cascade not null,
+  elderly_id uuid references public.elderly_profiles(id) on delete cascade,
+  name text not null,
+  relation text not null,
+  phone text,
+  role text default 'Member',
+  is_primary boolean default false,
+  notify_sms boolean default true,
+  notify_call boolean default true,
+  notify_whatsapp boolean default true,
+  created_at timestamptz default now() not null,
+  updated_at timestamptz default now() not null
+);
+
+alter table public.family_members enable row level security;
+
+create policy "Users can view family members they own"
+  on public.family_members for select
+  using (auth.uid() = owner_id);
+
+create policy "Users can insert family members they own"
+  on public.family_members for insert
+  with check (auth.uid() = owner_id);
+
+create policy "Users can update family members they own"
+  on public.family_members for update
+  using (auth.uid() = owner_id);
+
+create policy "Users can delete family members they own"
+  on public.family_members for delete
+  using (auth.uid() = owner_id);
+
+-- ==============================================================================
+-- 9. Health Readings Table (BP, Blood Sugar, Mood, Hydration)
+-- ==============================================================================
+create table if not exists public.health_readings (
+  id uuid primary key default uuid_generate_v4(),
+  owner_id uuid references auth.users(id) on delete cascade not null,
+  elderly_id uuid,
+  blood_pressure_systolic integer,
+  blood_pressure_diastolic integer,
+  blood_sugar text,
+  mood text,
+  hydration text,
+  notes text,
+  recorded_at timestamptz default now() not null,
+  created_at timestamptz default now() not null
+);
+
+alter table public.health_readings enable row level security;
+
+create policy "Users can view their health readings"
+  on public.health_readings for select
+  using (auth.uid() = owner_id);
+
+create policy "Users can insert their health readings"
+  on public.health_readings for insert
+  with check (auth.uid() = owner_id);
+
+create policy "Users can update their health readings"
+  on public.health_readings for update
+  using (auth.uid() = owner_id);
+
+-- ==============================================================================
+-- 10. Medications Table
+-- ==============================================================================
+create table if not exists public.medications (
+  id uuid primary key default uuid_generate_v4(),
+  owner_id uuid references auth.users(id) on delete cascade not null,
+  elderly_id uuid,
+  medicine_name text not null,
+  dosage text default '1 tablet',
+  schedule_time text default '09:00 AM',
+  is_taken boolean default false,
+  taken_at timestamptz,
+  created_at timestamptz default now() not null
+);
+
+alter table public.medications enable row level security;
+
+create policy "Users can view their medications"
+  on public.medications for select
+  using (auth.uid() = owner_id);
+
+create policy "Users can insert their medications"
+  on public.medications for insert
+  with check (auth.uid() = owner_id);
+
+create policy "Users can update their medications"
+  on public.medications for update
+  using (auth.uid() = owner_id);
+
+-- ==============================================================================
+-- 11. Call Logs / Check-ins Table
+-- ==============================================================================
+create table if not exists public.call_logs (
+  id uuid primary key default uuid_generate_v4(),
+  owner_id uuid references auth.users(id) on delete cascade not null,
+  elderly_id uuid,
+  call_type text default 'ai_voice_checkin',
+  status text default 'completed',
+  duration_seconds integer default 0,
+  summary text,
+  transcript jsonb,
+  extracted_data jsonb,
+  started_at timestamptz default now(),
+  ended_at timestamptz default now(),
+  created_at timestamptz default now() not null
+);
+
+alter table public.call_logs enable row level security;
+
+create policy "Users can view their call logs"
+  on public.call_logs for select
+  using (auth.uid() = owner_id);
+
+create policy "Users can insert their call logs"
+  on public.call_logs for insert
+  with check (auth.uid() = owner_id);
+
+-- ==============================================================================
+-- 12. Alerts Table
+-- ==============================================================================
+create table if not exists public.alerts (
+  id uuid primary key default uuid_generate_v4(),
+  owner_id uuid references auth.users(id) on delete cascade not null,
+  elderly_id uuid,
+  title text not null,
+  message text not null,
+  severity text default 'normal', -- normal, attention, urgent
+  is_dismissed boolean default false,
+  created_at timestamptz default now() not null
+);
+
+alter table public.alerts enable row level security;
+
+create policy "Users can view their alerts"
+  on public.alerts for select
+  using (auth.uid() = owner_id);
+
+create policy "Users can insert their alerts"
+  on public.alerts for insert
+  with check (auth.uid() = owner_id);
+
+create policy "Users can update their alerts"
+  on public.alerts for update
+  using (auth.uid() = owner_id);
+

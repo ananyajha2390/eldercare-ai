@@ -171,28 +171,62 @@ export default function App() {
           if (!isMounted) return;
           setFamilyMembers(members);
 
-          // 3. Fetch latest health reading
-          const reading = await familyDataService.getLatestHealthReading(user.id);
+          // 3. Fetch latest health reading & latest call
+          const [reading, latestCall] = await Promise.all([
+            familyDataService.getLatestHealthReading(user.id),
+            familyDataService.fetchLatestCall(user.id),
+          ]);
           if (!isMounted) return;
 
-          if (reading && reading.hasData) {
+          const hasData = Boolean(
+            (reading && reading.hasData) ||
+            latestCall
+          );
+
+          if (hasData) {
             setHasRealHealthData(true);
-            if (reading.latestBP) {
+            if (reading?.latestBP) {
               setCurrentBP(reading.latestBP);
             }
-            if (reading.latestSugar) {
+            if (reading?.latestSugar) {
               setCurrentSugar(reading.latestSugar);
             }
-            if (reading.mood) {
+            if (reading?.mood) {
               setCurrentMood(reading.mood);
             }
-            if (reading.hydration) {
+            if (reading?.hydration) {
               setHydrationStatus(reading.hydration);
             }
-            if (reading.recordedAt) {
+            if (reading?.recordedAt) {
               setLastCheckInTime(
                 new Date(reading.recordedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
               );
+            } else if (latestCall && (latestCall.started_at || latestCall.created_at)) {
+              const callTime = latestCall.started_at || latestCall.created_at;
+              setLastCheckInTime(
+                new Date(callTime!).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              );
+            }
+            if (latestCall) {
+              const callTime = latestCall.started_at || latestCall.created_at;
+              const formattedItem: CallHistoryItem = {
+                id: latestCall.id || `call-${Date.now()}`,
+                timestamp: callTime ? new Date(callTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Today',
+                title: 'AI Care Check-in',
+                status: 'completed',
+                duration: `${Math.floor((latestCall.duration_seconds || 60) / 60)}m ${(latestCall.duration_seconds || 60) % 60}s`,
+                summary: latestCall.summary || 'AI voice check-in completed.',
+                caregiverSummary: 'Check-in recorded.',
+                transcript: Array.isArray(latestCall.transcript) ? latestCall.transcript : [],
+                healthEvents: [],
+                medicationEvents: [],
+                wellbeingObservation: 'Completed.',
+                alertsGenerated: [],
+              };
+              setCallHistory(prev => {
+                const exists = prev.some(c => c.id === formattedItem.id);
+                return exists ? prev : [formattedItem, ...prev];
+              });
             }
           } else {
             // New user with no health readings yet
@@ -318,6 +352,7 @@ export default function App() {
 
   // Update vitals when voice companion or live call extracts data
   const handleHealthDataExtracted = (data: ExtractedHealthData) => {
+    setHasRealHealthData(true);
     if (data.bloodPressure) {
       setCurrentBP(data.bloodPressure);
       setLastExtractedEvent(`Extracted BP: ${data.bloodPressure}`);
@@ -340,10 +375,34 @@ export default function App() {
     setLastCheckInTime('Just now');
   };
 
-  // Called when IncomingCallModal ends and saves history
-  const handleCallCompleted = (completedCall: CallHistoryItem) => {
+  // Called when call modal ends and saves history
+  const handleCallCompleted = async (completedCall: CallHistoryItem) => {
     setCallHistory(prev => [completedCall, ...prev]);
     setLastCheckInTime('Just now');
+    setHasRealHealthData(true);
+
+    const extracted = (completedCall as any).extractedData;
+    if (extracted) {
+      if (extracted.blood_pressure) {
+        setCurrentBP(extracted.blood_pressure);
+      } else if (extracted.systolic_bp && extracted.diastolic_bp) {
+        setCurrentBP(`${extracted.systolic_bp} / ${extracted.diastolic_bp}`);
+      }
+      if (extracted.blood_sugar) {
+        setCurrentSugar(String(extracted.blood_sugar));
+      }
+      if (extracted.mood) {
+        setCurrentMood(extracted.mood);
+      }
+      if (extracted.hydration_status) {
+        setHydrationStatus(extracted.hydration_status);
+      }
+      if (extracted.medication_status === 'taken') {
+        setMedications(prev =>
+          prev.map((m, idx) => (idx === 0 ? { ...m, status: 'taken', takenAt: 'Just now' } : m))
+        );
+      }
+    }
 
     if (completedCall.healthEvents && completedCall.healthEvents.length > 0) {
       completedCall.healthEvents.forEach(evt => {
@@ -362,6 +421,21 @@ export default function App() {
         setMedications(prev =>
           prev.map((m, idx) => (idx === 0 ? { ...m, status: 'taken', takenAt: 'Just now' } : m))
         );
+      }
+    }
+
+    // Refresh data from Supabase to ensure clean sync
+    if (user?.id) {
+      try {
+        const fresh = await familyDataService.getLatestHealthReading(user.id);
+        if (fresh && fresh.hasData) {
+          if (fresh.latestBP) setCurrentBP(fresh.latestBP);
+          if (fresh.latestSugar) setCurrentSugar(fresh.latestSugar);
+          if (fresh.mood) setCurrentMood(fresh.mood);
+          if (fresh.hydration) setHydrationStatus(fresh.hydration);
+        }
+      } catch (err) {
+        console.warn('Error fetching fresh readings post call:', err);
       }
     }
   };
