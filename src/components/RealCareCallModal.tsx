@@ -58,14 +58,20 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 }) => {
   const { profile, user } = useAuth();
 
-  // Dynamic user name from current logged-in profile
-  const currentUserName = (
+  // Dynamic user name from current logged-in profile (strictly user identity, never arbitrary family member)
+  const rawUserName = (
     profile?.full_name ||
     user?.user_metadata?.full_name ||
     user?.user_metadata?.name ||
     (user?.email ? user.email.split('@')[0] : '') ||
     ''
   ).trim();
+
+  // Clean demo indicators like "(Demo Caregiver)" or numbers from email prefixes
+  const currentUserName = rawUserName
+    .replace(/\s*\([^)]*\)/g, '')
+    .replace(/\d+$/g, '')
+    .trim();
 
   const userFirstName = extractFirstName(currentUserName);
   const userHonorific = userFirstName ? getHonorificName(currentUserName) : '';
@@ -228,6 +234,14 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       isCallActiveRef.current = true;
+      hasGreetedRef.current = false;
+      isProcessingRef.current = false;
+      currentUtteranceRef.current = '';
+      lastProcessedUtteranceRef.current = '';
+      messagesRef.current = [];
+      setApiError(null);
+      setMicError(null);
+      setLastUserUtterance('');
       setStage('calling');
       setDurationSeconds(0);
       setIsMuted(false);
@@ -305,6 +319,12 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 
     setVoiceState(activeState);
 
+    // Explicitly pause/stop speech recognition while AI is speaking so it NEVER hears itself
+    isListeningRef.current = false;
+    try {
+      voiceService.stopListening();
+    } catch {}
+
     // If speaker is muted, skip speech synthesis and enter listening after 1 second
     if (!isSpeakerOn) {
       setTimeout(() => {
@@ -324,16 +344,24 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         }
       },
       () => {
-        // onEnd -> Automatically enter LISTENING mode (Continuous Conversation Loop)
+        // onEnd -> Wait 300ms buffer to ensure speaker hardware is completely silent, then enter listening mode
         if (isCallActiveRef.current && !isProcessingRef.current) {
-          enterListeningMode();
+          setTimeout(() => {
+            if (isCallActiveRef.current && !isProcessingRef.current) {
+              enterListeningMode();
+            }
+          }, 300);
         }
       },
       (err) => {
-        // onError -> Also transition to listening
+        // onError -> Also transition to listening safely
         console.warn('Speech synthesis playback notice:', err);
         if (isCallActiveRef.current && !isProcessingRef.current) {
-          enterListeningMode();
+          setTimeout(() => {
+            if (isCallActiveRef.current && !isProcessingRef.current) {
+              enterListeningMode();
+            }
+          }, 300);
         }
       }
     );
@@ -571,6 +599,8 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
       messagesRef.current = updatedHistory;
       setMessages(updatedHistory);
 
+      // Successfully received response - clear any prior transient error
+      setApiError(null);
       isProcessingRef.current = false;
 
       // Speak Gemini's response using browser speech and show "AI Responding" state
@@ -581,8 +611,9 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
       isProcessingRef.current = false;
       if (!isCallActiveRef.current) return;
 
-      // Do NOT invent fake responses. Display clear retry option only on real API failure.
-      setApiError('ElderCare AI connection issue. Tap Retry below to re-send.');
+      // Show specific error info on real failure (e.g. status or reason) with retry option
+      const errorMsg = err?.message || 'Gemini response could not be retrieved';
+      setApiError(`Request Notice: ${errorMsg}. Tap Retry below to re-send.`);
       setVoiceState('Listening...');
       enterListeningMode();
     }

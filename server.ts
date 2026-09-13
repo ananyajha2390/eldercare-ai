@@ -48,20 +48,25 @@ function getGreeting(fullName?: string | null): string {
 }
 
 // Base system instruction for ElderCare AI as mandated by user specification
-const ELDERCARE_BASE_SYSTEM_INSTRUCTION = `You are ElderCare AI, a warm, patient and respectful voice companion for elderly users.
+const ELDERCARE_BASE_SYSTEM_INSTRUCTION = `You are ElderCare AI, a warm, patient, and respectful voice companion for elderly users.
 
-Speak naturally in Hindi/Hinglish.
-Use simple sentences.
-Ask only one question at a time.
-Listen carefully to the user's actual response.
-Always respond based on what the user actually said.
-Never invent the user's response.
-Never diagnose medical conditions.
-Do not give dangerous medical instructions.
-For medication concerns, encourage following the prescribed schedule or contacting a healthcare professional.
-If the user sounds distressed or reports an emergency, encourage contacting a trusted family member, caregiver, emergency service, or healthcare professional as appropriate.
+ELDERLY CONVERSATION RULES:
+- Speak naturally in warm Hindi/Hinglish.
+- Keep sentences short, polite, and respectful (1-2 sentences maximum).
+- Ask only ONE question at a time so the elderly user is never overwhelmed.
+- Avoid difficult technical words or clinical jargon.
+- Listen carefully to the user's actual response and continue the conversation contextually.
+- Always respond specifically to what the user actually said. Never repeat the exact same question already asked in previous turns.
+- Never invent the user's response.
+- Never diagnose medical conditions or give dangerous medical instructions.
+- For medication concerns, encourage following the prescribed schedule or contacting a healthcare professional.
+- If the user sounds distressed or reports an emergency, encourage contacting a trusted family member, caregiver, or healthcare professional.
 
-Your goal is companionship, routine check-ins, medication reminders, basic wellness tracking, and helping the user stay connected.`;
+HEALTH CHECK PROGRESSION:
+1. General Wellness: When user says they are doing fine ("मैं अच्छा हूँ", "I am fine"), warmly acknowledge and naturally check on medication adherence ("Bahut achha! Kya aapne aaj apni medicines time par le li hain?").
+2. Medication Check: When user confirms they took medicine ("हाँ, मैंने दवाई ले ली"), warmly praise them ("Bahut badhiya!") and ask if they feel any discomfort, tiredness, or weakness ("Kya aapko aaj koi kamzori ya takleef mehsoos ho rahi hai?").
+3. Discomfort/Weakness: If the user mentions weakness ("थोड़ी कमजोरी है"), dizziness, or pain, sympathize with deep care, advise resting and drinking water, note it down, and ask if they'd like their family member notified or if they need to check their blood pressure.
+4. Vitals & BP: When the user reports BP numbers (e.g. "120/80"), specifically acknowledge and confirm the reading.`;
 
 function getEldercareSystemInstruction(userName?: string | null): string {
   const trimmed = (userName || '').trim();
@@ -70,13 +75,13 @@ function getEldercareSystemInstruction(userName?: string | null): string {
     const honorific = getHonorificName(trimmed);
     userContext = `
 USER IDENTITY CONTEXT:
-The user's name is ${trimmed}. Address the user naturally as ${honorific} (e.g. 'Namaste ${honorific}').
-IMPORTANT: Do NOT refer to the user as Sharma ji unless their actual name is Sharma.`;
+The user's name is ${trimmed}. Address the user naturally and respectfully as ${honorific} (e.g. 'Namaste ${honorific}').
+IMPORTANT: Do NOT refer to the user as Sharma ji unless their actual surname is Sharma.`;
   } else {
     userContext = `
 USER IDENTITY CONTEXT:
 Address the user respectfully using 'ji' (e.g. 'Namaste ji').
-IMPORTANT: Do NOT invent a name. Do NOT refer to the user as Sharma ji unless their actual name is Sharma.`;
+IMPORTANT: Do NOT invent a name. Do NOT refer to the user as Sharma ji unless their actual surname is Sharma.`;
   }
 
   return `${ELDERCARE_BASE_SYSTEM_INSTRUCTION}\n${userContext}`;
@@ -371,8 +376,15 @@ Return your response in JSON format with fields:
   }
 }`;
 
-    // Candidate models in preference order (gemini-3.8-flash is the primary model)
-    const candidateModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
+    // Candidate models in preference order (fast resilient models first)
+    const candidateModels = [
+      'gemini-3.1-flash-lite',
+      'gemini-3.6-flash',
+      'gemini-3.5-flash',
+      'gemini-3.8-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-flash-latest',
+    ];
     let lastError: any = null;
     let rawText = '';
 
@@ -399,17 +411,20 @@ Return your response in JSON format with fields:
 
     if (!rawText) {
       // Fallback attempt without strict application/json mimeType
-      try {
-        console.log('[Server /api/chat] Attempting text fallback with gemini-3.8-flash...');
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-        });
-        if (response && response.text) {
-          rawText = response.text;
+      for (const fallbackModel of ['gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash']) {
+        try {
+          console.log(`[Server /api/chat] Attempting text fallback with ${fallbackModel}...`);
+          const response = await ai.models.generateContent({
+            model: fallbackModel,
+            contents: prompt,
+          });
+          if (response && response.text) {
+            rawText = response.text;
+            break;
+          }
+        } catch (e: any) {
+          lastError = e;
         }
-      } catch (e: any) {
-        lastError = e;
       }
     }
 
@@ -520,14 +535,26 @@ ${notes ? `- Observations: ${notes}` : ''}
 
 Strict safety: Do not diagnose medical conditions. Speak in a warm, reassuring, factual tone. Do NOT invent readings or events that were not provided.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-    });
+    const summaryModels = ['gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.8-flash'];
+    let summaryText = '';
+    for (const sm of summaryModels) {
+      try {
+        const response = await ai.models.generateContent({
+          model: sm,
+          contents: prompt,
+        });
+        if (response && response.text) {
+          summaryText = response.text.trim();
+          break;
+        }
+      } catch (e) {
+        // try next model
+      }
+    }
 
     res.json({
-      summary: response.text?.trim() || 'No health or check-in data has been recorded today.',
-      source: 'gemini',
+      summary: summaryText || 'No health or check-in data has been recorded today.',
+      source: summaryText ? 'gemini' : 'fallback',
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
