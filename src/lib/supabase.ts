@@ -21,13 +21,15 @@ export const isSupabaseConfigured: boolean = Boolean(
 /**
  * Supabase client initialized directly from VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.
  */
-export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-  },
-});
+export const supabase: SupabaseClient | null = isSupabaseConfigured
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    })
+  : null;
 
 /**
  * Format raw Supabase authentication errors into friendly, professional guidance.
