@@ -5,7 +5,7 @@ import {
   SmartAlert
 } from '../types';
 import { useAuth } from '../contexts/AuthContext';
-import { getHonorificName } from '../lib/nameUtils';
+import { getHonorificName, extractFirstName } from '../lib/nameUtils';
 import {
   Phone,
   PhoneCall,
@@ -39,13 +39,15 @@ export const AICareCallsPage: React.FC<AICareCallsPageProps> = ({
   onUpdateSchedule,
   onNavigate,
 }) => {
-  const { profile, user, isDemoMode } = useAuth();
+  const { profile, user } = useAuth();
   const rawAuthName =
     profile?.full_name ||
     user?.user_metadata?.full_name ||
     user?.user_metadata?.name ||
-    '';
-  const memberName = getHonorificName(rawAuthName) || (isDemoMode ? 'Sharma ji' : 'Elderly Member');
+    (user?.email ? user.email.split('@')[0] : '') ||
+    'Rahul';
+  const currentFirstName = extractFirstName(rawAuthName) || 'Rahul';
+  const memberName = getHonorificName(rawAuthName) || `${currentFirstName} ji`;
 
   const [activeTab, setActiveTab] = useState<'schedule' | 'telephony' | 'settings'>('schedule');
   const [scheduleModalOpen, setScheduleModalOpen] = useState<boolean>(false);
@@ -144,7 +146,7 @@ export const AICareCallsPage: React.FC<AICareCallsPageProps> = ({
               : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
-          Telephony Architecture (Twilio/PSTN)
+          Voice Calling Architecture (Demo Engine)
         </button>
         <button
           type="button"
@@ -254,7 +256,7 @@ export const AICareCallsPage: React.FC<AICareCallsPageProps> = ({
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              If {memberName} does not answer, ElderCare AI retries automatically 3 times over 10 minutes (08:00 AM, 08:05 AM, 08:10 AM). If still unanswered, a priority notification is dispatched to Rahul.
+              If {memberName} does not answer, ElderCare AI retries automatically 3 times over 10 minutes (08:00 AM, 08:05 AM, 08:10 AM). If still unanswered, a priority notification is dispatched to caregiver {currentFirstName}.
             </p>
 
             {missedSimulatedState && (
@@ -269,7 +271,7 @@ export const AICareCallsPage: React.FC<AICareCallsPageProps> = ({
                 </div>
                 <div className="text-emerald-400 font-semibold flex items-center gap-1.5 pt-1 border-t border-slate-800">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  Caregiver Rahul notified via priority WhatsApp/SMS alert • Dashboard updated
+                  Caregiver {currentFirstName} notified via priority WhatsApp/SMS alert • Dashboard updated
                 </div>
               </div>
             )}
@@ -314,30 +316,40 @@ export const AICareCallsPage: React.FC<AICareCallsPageProps> = ({
                 </div>
               </div>
 
-              <div className="p-5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
+              <div className="p-5 rounded-2xl bg-slate-950 border border-teal-500/40 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Mode 2: Real Phone Call</span>
-                  <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 text-[10px] font-bold">
-                    Server Integration Ready
+                  <span className="text-xs font-bold uppercase tracking-wider text-teal-400">Mode 2: Phone Call Simulation</span>
+                  <span className="px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 text-[10px] font-bold">
+                    Interactive Demo
                   </span>
                 </div>
-                <h4 className="text-base font-bold text-white">Twilio / Exotel / Plivo Carrier Bridge</h4>
+                <h4 className="text-base font-bold text-white">Outbound AI Voice Call Experience</h4>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Calls {memberName}'s actual SIM mobile number via PSTN telephony webhooks. Audio streams via bidirectional WebSockets directly into Gemini Live.
+                  Simulates a realistic outbound carrier call to {memberName}'s mobile number with dialing rings, auto-connect, live Hindi/Hinglish speech dialogue, in-call audio controls, and medical summary.
                 </p>
                 <div className="pt-2 text-[11px] font-mono text-slate-400">
-                  Required Secrets: <span className="text-slate-300">TELEPHONY_ACCOUNT_ID, TELEPHONY_AUTH_TOKEN, TELEPHONY_PHONE_NUMBER</span>
+                  Provider: <span className="text-teal-300">SimulatedCareCallProvider (Self-Contained)</span>
+                </div>
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => onTriggerCall('Simulated Outbound Call')}
+                    className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md shadow-teal-600/20"
+                  >
+                    <PhoneCall className="w-3.5 h-3.5" />
+                    <span>Start Outbound AI Care Call</span>
+                  </button>
                 </div>
               </div>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-slate-400 space-y-1">
-              <div className="font-bold text-slate-200">Production Security Notice:</div>
+              <div className="font-bold text-slate-200">Hackathon Self-Contained Demo:</div>
               <div>
-                • Telephony tokens are strictly kept in the server environment (<code className="text-teal-300">server.ts</code>) and never exposed to the frontend browser bundle.
+                • The call experience is 100% self-contained within the browser and requires no external API keys, Twilio accounts, or carrier subscriptions.
               </div>
               <div>
-                • In this preview, all interactive calls are transparently marked as <strong>"Demo Call"</strong> to preserve judge trust.
+                • Clicking <strong>"Start AI Care Call"</strong> launches the full mobile calling screen with ring animation, conversational speech synthesis, and real-time vital extraction.
               </div>
             </div>
           </div>

@@ -281,23 +281,35 @@ export class VoiceService {
   }
 
   /**
-   * Starts speech recognition with Indian acoustic language model
+   * Starts speech recognition with Indian acoustic language model and continuous mode
    */
   public startListening(
     onResult: (transcript: string, isFinal: boolean) => void,
     onError: (err: any) => void,
     onEnd: () => void
   ): boolean {
-    if (!this.recognition) {
+    const SpeechClass =
+      typeof window !== 'undefined'
+        ? window.SpeechRecognition || window.webkitSpeechRecognition
+        : null;
+
+    if (!SpeechClass) {
       onError({ error: 'Browser Speech Recognition is not supported in this frame or browser' });
       return false;
     }
 
-    // Cancel any active speech output when the user starts speaking
+    // Cancel any active speech output when listening
     this.stopSpeaking();
 
     try {
-      this.recognition.continuous = false;
+      if (this.recognition) {
+        try {
+          this.recognition.abort();
+        } catch {}
+      }
+
+      this.recognition = new SpeechClass();
+      this.recognition.continuous = true;
       this.recognition.interimResults = true;
       // Use hi-IN acoustic model which recognizes both Hindi and Hinglish speech accurately
       this.recognition.lang = 'hi-IN';
@@ -319,11 +331,17 @@ export class VoiceService {
             }
           }
         }
-        const text = finalTranscript || interim;
+        const text = (finalTranscript || interim).trim();
         onResult(text, Boolean(finalTranscript));
       };
 
       this.recognition.onerror = (event: any) => {
+        const errorType = event?.error || '';
+        // 'no-speech' is a normal silence event in browsers, not a fatal failure
+        if (errorType === 'no-speech' || errorType === 'aborted') {
+          return;
+        }
+        console.warn('Speech recognition notice:', errorType);
         this.isListening = false;
         onError(event);
       };
@@ -334,8 +352,10 @@ export class VoiceService {
       };
 
       this.recognition.start();
+      this.isListening = true;
       return true;
-    } catch (e) {
+    } catch (e: any) {
+      console.warn('Could not start speech recognition:', e?.message || e);
       this.isListening = false;
       onError(e);
       return false;
@@ -343,9 +363,9 @@ export class VoiceService {
   }
 
   public stopListening(): void {
-    if (this.recognition && this.isListening) {
+    if (this.recognition) {
       try {
-        this.recognition.stop();
+        this.recognition.abort();
       } catch {
         // ignore
       }
@@ -389,6 +409,12 @@ export class VoiceService {
       const utterance = new SpeechSynthesisUtterance(speechText);
       this.currentUtterance = utterance;
 
+      // Keep utterance in window array to prevent Chrome garbage-collection bug
+      if (typeof window !== 'undefined') {
+        (window as any).__activeUtterances = (window as any).__activeUtterances || [];
+        (window as any).__activeUtterances.push(utterance);
+      }
+
       if (bestVoice) {
         utterance.voice = bestVoice;
         utterance.lang = bestVoice.lang;
@@ -418,6 +444,26 @@ export class VoiceService {
         status: 'speaking',
       };
 
+      let completed = false;
+      const safeFinish = () => {
+        if (completed) return;
+        completed = true;
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+        this.isSpeaking = false;
+        this.currentUtterance = null;
+        this.lastDiagnostics.status = 'idle';
+        if (onEnd) onEnd();
+      };
+
+      // Watchdog timer: if browser speech synthesis hangs, ensure conversation resumes
+      const maxDuration = Math.max(3000, Math.min(25000, speechText.length * 85 + 3500));
+      const watchdogTimer = setTimeout(() => {
+        if (this.isSpeaking) {
+          console.warn('Speech synthesis watchdog triggered safe completion');
+          safeFinish();
+        }
+      }, maxDuration);
+
       utterance.onstart = () => {
         this.isSpeaking = true;
         this.lastDiagnostics.status = 'speaking';
@@ -425,20 +471,18 @@ export class VoiceService {
       };
 
       utterance.onend = () => {
-        this.isSpeaking = false;
-        this.currentUtterance = null;
-        this.lastDiagnostics.status = 'idle';
-        if (onEnd) onEnd();
+        safeFinish();
       };
 
       utterance.onerror = (e) => {
-        this.isSpeaking = false;
-        this.currentUtterance = null;
-        this.lastDiagnostics.status = 'idle';
+        console.warn('Speech playback notice:', e);
         if (onError) onError(e);
-        if (onEnd) onEnd();
+        safeFinish();
       };
 
+      if (this.synth.paused) {
+        this.synth.resume();
+      }
       this.synth.speak(utterance);
     } catch (e) {
       console.warn('Speech synthesis error:', e);

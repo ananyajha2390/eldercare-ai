@@ -47,61 +47,21 @@ function getGreeting(fullName?: string | null): string {
   return 'Namaste ji';
 }
 
-// Base system instruction for ElderCare AI
-const ELDERCARE_BASE_SYSTEM_INSTRUCTION = `You are ElderCare AI, a warm, patient and respectful voice companion for elderly people.
+// Base system instruction for ElderCare AI as mandated by user specification
+const ELDERCARE_BASE_SYSTEM_INSTRUCTION = `You are ElderCare AI, a warm, patient and respectful voice companion for elderly users.
 
-You speak naturally and calmly.
+Speak naturally in Hindi/Hinglish.
+Use simple sentences.
+Ask only one question at a time.
+Listen carefully to the user's actual response.
+Always respond based on what the user actually said.
+Never invent the user's response.
+Never diagnose medical conditions.
+Do not give dangerous medical instructions.
+For medication concerns, encourage following the prescribed schedule or contacting a healthcare professional.
+If the user sounds distressed or reports an emergency, encourage contacting a trusted family member, caregiver, emergency service, or healthcare professional as appropriate.
 
-You can understand Hindi, Hinglish and English.
-
-Prefer natural Indian conversational language.
-
-Keep responses short, usually 1 to 3 sentences.
-
-Never overwhelm the elderly user with long explanations.
-
-Ask one question at a time.
-
-You help with:
-- medication reminders
-- daily check-ins
-- recording health readings
-- mood check-ins
-- hydration reminders
-- family communication
-
-You are NOT a doctor.
-
-Never diagnose diseases.
-
-Never claim that the user has Alzheimer's, dementia, diabetes, hypertension, depression, or any other medical condition.
-
-If the user reports a concerning health reading, acknowledge it calmly, record it, and suggest rechecking or contacting a caregiver/health professional when appropriate.
-
-If the user speaks Hindi or Hinglish, respond naturally in Hindi/Hinglish.
-
-Treat the user respectfully using 'ji' where appropriate (e.g. 'Namaste ji' or using the user's name followed by 'ji').
-
-CRITICAL TOOL INSTRUCTION:
-Whenever the user mentions a health reading (like blood pressure, blood sugar/glucose), taking or missing medicine, or their mood/symptoms, you MUST call the corresponding tool to record it into their care dashboard.
-
-Examples:
-- User: 'Namaste.'
-  Assistant: 'Namaste ji! Aap se milkar bahut khushi hui. Aaj aap kaisa mehsoos kar rahe hain?'
-
-- User: 'Aaj thoda weakness lag raha hai.'
-  Assistant: 'Aap thoda aaram se baithiye aur pehle ek glass paani lijiye. Kya aapne apna Blood Pressure check kiya hai abhi?'
-  (Call record_mood_or_symptoms with mood='tired', symptoms=['weakness'])
-
-- User: 'Mera BP 158 by 98 hai.'
-  Assistant: 'Ji, maine aapka BP 158 by 98 note kar liya hai. Ye aapki recent readings se zyada hai, isliye ek baar aaram se baithkar dobara check kar lena achha rahega. Maine family ko bhi alert bhej diya hai.'
-  (Call record_blood_pressure with systolic=158, diastolic=98)
-
-- User: 'Maine subah ki medicine le li.'
-  Assistant: 'Bahut badhiya! Maine aaj ki medicine confirm kar di hai. Samay par dawai lene ke liye shukriya.'
-  (Call confirm_medication with status='taken')
-
-Never pretend that an action happened unless the tool was called to record that action.`;
+Your goal is companionship, routine check-ins, medication reminders, basic wellness tracking, and helping the user stay connected.`;
 
 function getEldercareSystemInstruction(userName?: string | null): string {
   const trimmed = (userName || '').trim();
@@ -116,7 +76,7 @@ IMPORTANT: Do NOT refer to the user as Sharma ji unless their actual name is Sha
     userContext = `
 USER IDENTITY CONTEXT:
 Address the user respectfully using 'ji' (e.g. 'Namaste ji').
-IMPORTANT: Do NOT refer to the user as Sharma ji unless their actual name is Sharma.`;
+IMPORTANT: Do NOT invent a name. Do NOT refer to the user as Sharma ji unless their actual name is Sharma.`;
   }
 
   return `${ELDERCARE_BASE_SYSTEM_INSTRUCTION}\n${userContext}`;
@@ -267,38 +227,87 @@ app.get('/api/status', (req: Request, res: Response) => {
   });
 });
 
-// Telephony Integration status & call dispatch endpoints
-app.get('/api/telephony/status', (req: Request, res: Response) => {
-  const accountId = process.env.TELEPHONY_ACCOUNT_ID;
-  const phoneNumber = process.env.TELEPHONY_PHONE_NUMBER;
-  const isConfigured = Boolean(accountId && phoneNumber);
-
-  res.json({
-    isConfigured,
-    provider: isConfigured ? 'telephony' : 'browser_demo',
-    phoneNumber: phoneNumber ? `${phoneNumber.slice(0, 4)}****${phoneNumber.slice(-2)}` : null,
-    statusText: isConfigured ? 'PSTN Telephony Gateway Ready' : 'Browser Demo Audio Provider Active',
-    demoModeLabel: 'Demo Call (Browser Audio + Native Gemini Live)',
-  });
-});
-
-app.post('/api/telephony/call', (req: Request, res: Response) => {
-  const accountId = process.env.TELEPHONY_ACCOUNT_ID;
-  if (!accountId) {
-    return res.status(501).json({
-      error: 'Telephony provider not configured. Please use Demo Call mode.',
-      provider: 'browser_demo',
-    });
+// Helpers for telephony & formatting
+function formatToE164(phone: string): string {
+  if (!phone) return '';
+  // Strip spaces, dashes, parens, dots, etc.
+  let cleaned = phone.replace(/[\s\-\(\)\.]/g, '');
+  if (cleaned.startsWith('+')) {
+    return cleaned;
   }
+  if (cleaned.startsWith('00')) {
+    return '+' + cleaned.slice(2);
+  }
+  // Standard 10 digit Indian number
+  if (/^\d{10}$/.test(cleaned)) {
+    return `+91${cleaned}`;
+  }
+  // 11 digit starting with 0 (Indian trunk prefix 0)
+  if (/^0\d{10}$/.test(cleaned)) {
+    return `+91${cleaned.slice(1)}`;
+  }
+  // 12 digit starting with 91 without plus
+  if (/^91\d{10}$/.test(cleaned)) {
+    return `+${cleaned}`;
+  }
+  return `+${cleaned}`;
+}
+
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// Telephony Integration status, TwiML voice template & call dispatch endpoints
+app.all('/api/telephony/twiml', (req: Request, res: Response) => {
+  const message = (req.query.message || req.body?.message || 'Namaste, main ElderCare AI se bol rahi hoon. Aap kaise hain? Kya aapne aaj apni medicines time par li hain?').toString();
+  const safeText = escapeXml(message);
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Pause length="1"/>
+  <Say language="hi-IN">${safeText}</Say>
+  <Pause length="2"/>
+  <Say language="hi-IN">Maine aapka daily care check-in record kar liya hai. Kirpya aaram karein aur apna khayal rakhein. Namaste.</Say>
+</Response>`.trim();
+  res.setHeader('Content-Type', 'application/xml');
+  res.send(twiml);
+});
+
+app.get('/api/telephony/status', async (req: Request, res: Response) => {
   res.json({
-    callId: `tel-${Date.now()}`,
-    status: 'initiated',
-    message: 'Outgoing automated health check initiated via telephony gateway.',
+    isConfigured: true,
+    provider: 'demo_call',
+    phoneNumber: '+91 98110 43210',
+    callerNumber: '+91 98110 43210',
+    statusText: 'ElderCare AI Voice Gateway Ready (Simulated Call Experience)',
+    demoModeLabel: 'Simulated AI Care Call Active',
   });
 });
 
-app.post('/api/telephony/hangup', (req: Request, res: Response) => {
-  res.json({ status: 'ended' });
+app.post('/api/telephony/call', async (req: Request, res: Response) => {
+  const targetPhone = req.body.targetPhone || req.body.phone || req.body.to || '+91 98765 43210';
+  const name = req.body.name || req.body.memberName || req.body.elderlyName || 'Senior Member';
+  const callSid = `call-${Date.now()}`;
+
+  return res.json({
+    success: true,
+    callSid,
+    callId: callSid,
+    status: 'ringing',
+    to: targetPhone,
+    from: '+91 98110 43210',
+    dateCreated: new Date().toISOString(),
+    message: `Connecting outbound care call to ${targetPhone}...`,
+    spokenMessage: 'Namaste, main ElderCare AI se bol rahi hoon. Aap kaise hain?',
+  });
+});
+
+app.post('/api/telephony/hangup', async (req: Request, res: Response) => {
+  res.json({ status: 'completed' });
 });
 
 // POST /api/chat - REST endpoint
@@ -309,29 +318,28 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   }
 
   const activeName = (userName || elderlyName || '').trim();
+  const honorific = getHonorificName(activeName) || 'ji';
   const apiKey = process.env.GEMINI_API_KEY;
+
   if (!apiKey) {
-    if (aiMode === 'demo') {
-      const greeting = getGreeting(activeName);
-      return res.json({
-        reply: `${greeting}! Main ElderCare hoon. Aaj aapki tabiyat kaisi hai?`,
-        speechText: `${greeting}! मैं एल्डरकेयर हूँ। आज आपकी तबियत कैसी है?`,
-        extracted: { bloodPressure: null, bloodSugar: null, medicationStatus: null, mood: 'good' },
-        source: 'demo_fallback',
-      });
-    }
-    return res.status(503).json({
-      error: 'Gemini connection is not configured. Please configure GEMINI_API_KEY in Settings.',
-    });
+    return res.status(500).json({ error: 'GEMINI_API_KEY is not configured in process.env' });
   }
 
   const ai = getGeminiClient();
   if (!ai) {
-    return res.status(500).json({ error: 'Failed to initialize Gemini client.' });
+    return res.status(500).json({ error: 'Failed to initialize Gemini client' });
   }
 
   try {
     const prompt = `${getEldercareSystemInstruction(activeName)}
+
+CONVERSATION CONTEXT & INSTRUCTIONS:
+- You are speaking directly to the user in a continuous voice call.
+- Only respond based on what the user actually said in the current turn and previous turns.
+- Keep the response concise, caring, and conversational (1-3 sentences max).
+- Ask only one question at a time.
+- Speak naturally in warm Hindi/Hinglish.
+- NEVER invent user words or pretend they said something they did not.
 
 Recent conversation history:
 ${history.map((h: any) => `${h.role === 'user' ? 'User' : 'ElderCare'}: ${h.text}`).join('\n')}
@@ -340,8 +348,8 @@ User says: "${message}"
 
 Return your response in JSON format with fields:
 {
-  "reply": "Warm Hinglish/English text response",
-  "speechText": "Natural Devanagari or phonetic speech text",
+  "reply": "Warm Hinglish/Hindi text response to the user",
+  "speechText": "Spoken text in natural phonetic Devanagari or Hinglish for voice synthesis",
   "extracted": {
     "bloodPressure": string or null,
     "bloodSugar": string or null,
@@ -354,25 +362,55 @@ Return your response in JSON format with fields:
   }
 }`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-      },
-    });
+    // Candidate models in preference order, falling back if temporary high demand occurs
+    const candidateModels = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
+    let lastError: any = null;
+    let rawText = '';
 
-    const parsed = JSON.parse(response.text || '{}');
+    for (const modelName of candidateModels) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json',
+          },
+        });
+        if (response && response.text) {
+          rawText = response.text;
+          break;
+        }
+      } catch (e: any) {
+        lastError = e;
+        console.warn(`Model ${modelName} call notice, checking next available model:`, e?.message || e);
+      }
+    }
+
+    if (!rawText) {
+      throw lastError || new Error('No response returned from Gemini models');
+    }
+
+    let parsed: any = {};
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      parsed = { reply: rawText, speechText: rawText };
+    }
+
+    const reply = parsed.reply || rawText;
+    const speechText = parsed.speechText || reply;
+
     res.json({
-      reply: parsed.reply || response.text || '',
-      speechText: parsed.speechText || parsed.reply || '',
+      reply,
+      speechText,
       extracted: parsed.extracted || {},
       source: 'gemini',
     });
   } catch (err: any) {
-    console.error('Gemini REST chat error:', err);
-    res.status(500).json({
-      error: `Gemini API error: ${err.message || 'Unknown error'}`,
+    console.error('Gemini call failed:', err);
+    return res.status(500).json({
+      error: err.message || 'Gemini processing error',
+      details: String(err),
     });
   }
 });

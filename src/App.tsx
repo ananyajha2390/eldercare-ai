@@ -14,6 +14,7 @@ import { EmergencySafety } from './components/EmergencySafety';
 import { SimpleElderlyMode } from './components/SimpleElderlyMode';
 import { DemoController } from './components/DemoController';
 import { IncomingCallModal } from './components/IncomingCallModal';
+import { RealCareCallModal } from './components/RealCareCallModal';
 import { AICareCallsPage } from './components/AICareCallsPage';
 import { CallHistoryPage } from './components/CallHistoryPage';
 import { DevelopmentDebugPanel } from './components/DevelopmentDebugPanel';
@@ -87,6 +88,9 @@ export default function App() {
 
   // Proactive Calling & Telephony state
   const [callModalOpen, setCallModalOpen] = useState<boolean>(false);
+  const [realCallModalOpen, setRealCallModalOpen] = useState<boolean>(false);
+  const [selectedCallMemberId, setSelectedCallMemberId] = useState<string | undefined>(undefined);
+  const [selectedCallPhone, setSelectedCallPhone] = useState<string | undefined>(undefined);
   const [callModalScenario, setCallModalScenario] = useState<'high_bp' | 'normal' | null>(null);
   const [callSchedules, setCallSchedules] = useState<CallScheduleItem[]>(initialCallSchedule);
   const [callHistory, setCallHistory] = useState<CallHistoryItem[]>(initialCallHistory);
@@ -298,8 +302,16 @@ export default function App() {
     }
   };
 
-  // Open Proactive Call
-  const handleTriggerCall = (scenario: 'high_bp' | 'normal' = 'normal') => {
+  // Open Outbound AI Care Call (Simulated Outbound Phone Call)
+  const handleTriggerCall = (scenario: 'high_bp' | 'normal' = 'normal', memberId?: string, phone?: string) => {
+    setSelectedCallMemberId(memberId);
+    setSelectedCallPhone(phone);
+    setCallModalScenario(scenario);
+    setRealCallModalOpen(true);
+  };
+
+  // Open Browser Audio Demo Call (Gemini Live)
+  const handleTriggerBrowserDemo = (scenario: 'high_bp' | 'normal' = 'normal') => {
     setCallModalScenario(scenario);
     setCallModalOpen(true);
   };
@@ -384,6 +396,16 @@ export default function App() {
       id: `med-${Date.now()}`,
     };
     setMedications(prev => [...prev, created]);
+  };
+
+  const handleUpdateMood = async (newMood: string) => {
+    setCurrentMood(newMood);
+    if (user?.id) {
+      await familyDataService.addHealthReading(user.id, {
+        mood: newMood,
+        elderly_id: elderlyProfile?.id || null,
+      });
+    }
   };
 
   const handleResetToBaseline = () => {
@@ -513,6 +535,8 @@ export default function App() {
 
   // Simple Elderly Mode view
   if (simpleMode || currentView === 'simple') {
+    const elderDisplayName = elderlyProfile?.name || profile?.care_recipient_name || profile?.full_name || '';
+
     return (
       <>
         {isDemoMode && (
@@ -521,7 +545,7 @@ export default function App() {
               <span className="font-bold bg-amber-200 text-amber-950 px-2 py-0.5 rounded text-[10px] uppercase">
                 Demo Mode
               </span>
-              <span>Elderly Senior View ({elderlyProfile?.name || profile?.care_recipient_name || (isDemoMode ? 'Sharma ji' : 'Elderly Member')})</span>
+              <span>Elderly Senior View {elderDisplayName ? `(${elderDisplayName})` : ''}</span>
             </div>
             <button
               onClick={() => {
@@ -540,20 +564,47 @@ export default function App() {
             setSimpleMode(false);
             setCurrentView(profile?.role === 'elderly' ? 'landing' : 'family');
           }}
-          onOpenVoice={() => handleTriggerCall('normal')}
-          medications={medications}
-          currentBP={currentBP}
-          onQuickVoiceUtterance={(text) => {
-            setLastUserInput(text);
+          onOpenVoice={(prompt) => {
+            if (prompt) setLastUserInput(prompt);
             handleTriggerCall('normal');
           }}
+          medications={medications}
+          onToggleMedication={handleToggleMedStatus}
+          currentBP={currentBP}
+          currentSugar={currentSugar}
+          currentMood={currentMood}
+          isStable={isStable}
+          familyMembers={familyMembers}
+          elderlyProfile={elderlyProfile}
+          onUpdateMood={handleUpdateMood}
+          elderlyName={elderDisplayName}
+        />
+
+        {/* Real Outbound AI Care Call Modal (Live Gemini Voice Experience) */}
+        <RealCareCallModal
+          isOpen={realCallModalOpen}
+          onClose={() => setRealCallModalOpen(false)}
+          elderlyProfile={elderlyProfile}
+          familyMembers={familyMembers}
+          onStartBrowserDemoCall={(scenario) => {
+            setRealCallModalOpen(false);
+            handleTriggerBrowserDemo(scenario || 'normal');
+          }}
+          onCallCompleted={handleCallCompleted}
+          onViewDashboard={() => {
+            setRealCallModalOpen(false);
+            setSimpleMode(false);
+            setCurrentView('family');
+          }}
+          initialMemberId={selectedCallMemberId}
+          initialPhone={selectedCallPhone}
         />
 
         {/* Incoming Call Modal inside Simple Mode */}
         <IncomingCallModal
           isOpen={callModalOpen}
           onClose={() => setCallModalOpen(false)}
-          elderlyName={elderlyProfile?.name || profile?.care_recipient_name || (isDemoMode ? 'Sharma ji' : 'Elderly Member')}
+          elderlyName={elderDisplayName || 'Elderly Member'}
           checkInTitle="Scheduled Care Check-in"
           onHealthDataExtracted={handleHealthDataExtracted}
           onNewAlert={handleNewAlert}
@@ -798,6 +849,7 @@ export default function App() {
                 onUpdateMember={handleUpdateFamilyMember}
                 onDeleteMember={handleDeleteFamilyMember}
                 onRefresh={handleRefreshFamilyMembers}
+                onCallMember={(member) => handleTriggerCall('normal', member.id, member.phone)}
               />
 
               <EmergencySafety
@@ -832,6 +884,25 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Outbound AI Care Call Modal (Simulated Mobile Call Experience) */}
+      <RealCareCallModal
+        isOpen={realCallModalOpen}
+        onClose={() => setRealCallModalOpen(false)}
+        elderlyProfile={elderlyProfile}
+        familyMembers={familyMembers}
+        onStartBrowserDemoCall={(scenario) => {
+          setRealCallModalOpen(false);
+          handleTriggerBrowserDemo(scenario || 'normal');
+        }}
+        onCallCompleted={handleCallCompleted}
+        onViewDashboard={() => {
+          setRealCallModalOpen(false);
+          setCurrentView('family');
+        }}
+        initialMemberId={selectedCallMemberId}
+        initialPhone={selectedCallPhone}
+      />
 
       {/* Incoming Call Modal (Bidirectional Audio / Live AI Call) */}
       <IncomingCallModal

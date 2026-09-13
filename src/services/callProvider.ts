@@ -1,7 +1,6 @@
 /**
  * CallProvider abstraction for ElderCare AI
- * Prepares the architectural foundation for actual telephone calling (Twilio, Exotel, Plivo)
- * while operating seamlessly in Demo Mode with browser microphone and audio.
+ * Supports both Interactive Browser Audio and Simulated Mobile Phone Call experiences.
  */
 
 export interface CallStatus {
@@ -74,42 +73,78 @@ export class BrowserCallProvider implements CallProvider {
   }
 }
 
-export class TelephonyCallProvider implements CallProvider {
-  private serverEndpoint = '/api/telephony';
+export interface TelephonyCallOptions {
+  memberName?: string;
+  elderlyName?: string;
+  promptIntro?: string;
+  message?: string;
+  language?: string;
+}
 
-  async startCall(targetPhone: string): Promise<{ callId: string; status: string }> {
-    const res = await fetch(`${this.serverEndpoint}/call`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetPhone }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || 'Telephony provider not configured on server');
-    }
-    return res.json();
+export interface TelephonyCallResult {
+  success: boolean;
+  callSid: string;
+  callId: string;
+  status: string;
+  to: string;
+  from: string;
+  dateCreated?: string;
+  message: string;
+  spokenMessage?: string;
+  error?: string;
+  code?: string;
+  twilioCode?: number;
+}
+
+export class TelephonyCallProvider implements CallProvider {
+  async startCall(targetPhone: string, options?: TelephonyCallOptions): Promise<{ callId: string; status: string; callSid?: string; message?: string }> {
+    const callId = `care-call-${Date.now()}`;
+    return {
+      callId,
+      callSid: callId,
+      status: 'ringing',
+      message: `Simulated AI call connected to ${targetPhone}`,
+    };
   }
 
   async endCall(callId: string): Promise<void> {
-    await fetch(`${this.serverEndpoint}/hangup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ callId }),
-    });
+    // End simulated call
   }
 
   async getCallStatus(callId: string): Promise<CallStatus> {
-    const res = await fetch(`${this.serverEndpoint}/status?callId=${encodeURIComponent(callId)}`);
-    return res.json();
+    return {
+      callId,
+      status: 'connected',
+      durationSeconds: 15,
+      provider: 'telephony',
+      targetNumber: '+91 98765 43210',
+    };
+  }
+
+  async getGatewayStatus(): Promise<{
+    isConfigured: boolean;
+    provider: string;
+    phoneNumber: string | null;
+    callerNumber: string | null;
+    statusText: string;
+  }> {
+    return {
+      isConfigured: true,
+      provider: 'demo_voice',
+      phoneNumber: '+91 98110 43210',
+      callerNumber: '+91 98110 43210',
+      statusText: 'ElderCare AI Voice Gateway Ready (Interactive Call Simulation)',
+    };
   }
 
   sendAudio(data: ArrayBuffer): void {
-    // Streams binary audio packets to telephony bridge
+    // Simulated audio stream
   }
 
   receiveAudio(callback: (data: ArrayBuffer) => void): void {
-    // Telephony inbound media webhook receiver
+    // Simulated audio stream receiver
   }
 }
 
 export const defaultBrowserCallProvider = new BrowserCallProvider();
+export const defaultTelephonyCallProvider = new TelephonyCallProvider();
