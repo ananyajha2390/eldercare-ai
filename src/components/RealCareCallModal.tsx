@@ -601,6 +601,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 
       // Successfully received response - clear any prior transient error
       setApiError(null);
+      setLastUserUtterance('');
       isProcessingRef.current = false;
 
       // Speak Gemini's response using browser speech and show "AI Responding" state
@@ -611,9 +612,15 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
       isProcessingRef.current = false;
       if (!isCallActiveRef.current) return;
 
-      // Show specific error info on real failure (e.g. status or reason) with retry option
-      const errorMsg = err?.message || 'Gemini response could not be retrieved';
-      setApiError(`Request Notice: ${errorMsg}. Tap Retry below to re-send.`);
+      // Show specific useful development error (e.g. "Gemini API error: ..." or "API route failed: ...")
+      const rawMsg = err?.message || 'Unknown network error';
+      const formattedError = rawMsg.startsWith('Gemini API error') || rawMsg.startsWith('API route failed')
+        ? rawMsg
+        : rawMsg.includes('HTTP')
+        ? `API route failed: ${rawMsg}`
+        : `Gemini API error: ${rawMsg}`;
+
+      setApiError(formattedError);
       setVoiceState('Listening...');
       enterListeningMode();
     }

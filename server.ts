@@ -15,10 +15,19 @@ app.use(express.json());
 
 // Lazy-initialized Gemini client
 let geminiClient: GoogleGenAI | null = null;
+function getGeminiApiKey(): string | undefined {
+  return (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_GENAI_API_KEY ||
+    process.env.GOOGLE_API_KEY
+  );
+}
+
 function getGeminiClient(): GoogleGenAI | null {
-  if (!geminiClient && process.env.GEMINI_API_KEY) {
+  const key = getGeminiApiKey();
+  if (!geminiClient && key) {
     geminiClient = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
+      apiKey: key,
       httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
     });
   }
@@ -324,11 +333,11 @@ app.post('/api/chat', async (req: Request, res: Response) => {
 
   const activeName = (userName || elderlyName || '').trim();
   const honorific = getHonorificName(activeName) || 'ji';
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
 
   if (!apiKey) {
-    console.error('[Server /api/chat] Error: GEMINI_API_KEY is not configured in process.env');
-    return res.status(500).json({ error: 'GEMINI_API_KEY is not configured in process.env' });
+    console.error('[Server /api/chat] Error: Gemini API key is missing (expected GEMINI_API_KEY or GOOGLE_GENAI_API_KEY in environment variables)');
+    return res.status(500).json({ error: 'Gemini API key is not configured. Please set GEMINI_API_KEY in environment variables.' });
   }
 
   const ai = getGeminiClient();
@@ -500,7 +509,7 @@ app.post('/api/summary', async (req: Request, res: Response) => {
   const elder = (elderlyName || 'your family member').trim();
   const caregiver = (caregiverName || 'Caregiver').trim();
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   if (!apiKey) {
     const parts: string[] = [];
     if (checkInTime) parts.push(`${elder} checked in at ${checkInTime}.`);
