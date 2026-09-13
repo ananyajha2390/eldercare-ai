@@ -65,6 +65,8 @@ export class VoiceService {
   private recognition: SpeechRecognitionLike | null = null;
   private synth: SpeechSynthesis | null = null;
   private currentUtterance: SpeechSynthesisUtterance | null = null;
+  private recognitionSessionId = 0;
+  private isStartingRecognition = false;
 
   public isSpeechSupported = false;
   public isListening = false;
@@ -298,30 +300,53 @@ export class VoiceService {
       return false;
     }
 
-    // Cancel any active speech output when listening
+    // Do NOT start listening if AI is speaking (Requirement 12)
+    if (this.isSpeaking) {
+      return false;
+    }
+
+    // Prevent duplicate recognition sessions (Requirement 3)
+    if (this.isListening || this.isStartingRecognition) {
+      return true;
+    }
+
+    // Stop speaking if anything was active
     this.stopSpeaking();
 
+    // Clean up previous recognition safely
+    if (this.recognition) {
+      try {
+        this.recognition.onresult = null as any;
+        this.recognition.onerror = null as any;
+        this.recognition.onend = null as any;
+        this.recognition.onstart = null as any;
+        this.recognition.abort();
+      } catch {}
+      this.recognition = null;
+    }
+
+    const sessionId = ++this.recognitionSessionId;
+    this.isStartingRecognition = true;
+
     try {
-      if (this.recognition) {
-        try {
-          this.recognition.abort();
-        } catch {}
-      }
+      const rec = new SpeechClass();
+      this.recognition = rec;
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = this.languageMode === 'english' ? 'en-IN' : 'hi-IN';
 
-      this.recognition = new SpeechClass();
-      this.recognition.continuous = true;
-      this.recognition.interimResults = true;
-      // Use hi-IN acoustic model which recognizes both Hindi and Hinglish speech accurately
-      this.recognition.lang = 'hi-IN';
-
-      this.recognition.onstart = () => {
+      rec.onstart = () => {
+        if (this.recognitionSessionId !== sessionId) return;
         this.isListening = true;
+        this.isStartingRecognition = false;
       };
 
-      this.recognition.onresult = (event: SpeechRecognitionEventLike) => {
+      rec.onresult = (event: SpeechRecognitionEventLike) => {
+        if (this.recognitionSessionId !== sessionId) return;
         let interim = '';
         let finalTranscript = '';
-        for (let i = 0; i < event.results.length; i++) {
+        const startIndex = typeof (event as any).resultIndex === 'number' ? (event as any).resultIndex : 0;
+        for (let i = startIndex; i < event.results.length; i++) {
           const item = event.results[i];
           if (item && item[0]) {
             if (item.isFinal) {
@@ -331,45 +356,57 @@ export class VoiceService {
             }
           }
         }
-        const text = (finalTranscript || interim).trim();
-        onResult(text, Boolean(finalTranscript));
+        if (finalTranscript.trim()) {
+          onResult(finalTranscript.trim(), true);
+        } else if (interim.trim()) {
+          onResult(interim.trim(), false);
+        }
       };
 
-      this.recognition.onerror = (event: any) => {
+      rec.onerror = (event: any) => {
+        if (this.recognitionSessionId !== sessionId) return;
+        this.isStartingRecognition = false;
         const errorType = event?.error || '';
         // 'no-speech' is a normal silence event in browsers, not a fatal failure
         if (errorType === 'no-speech' || errorType === 'aborted') {
           return;
         }
-        console.warn('Speech recognition notice:', errorType);
+        console.warn('[VoiceService] Speech recognition notice:', errorType);
         this.isListening = false;
         onError(event);
       };
 
-      this.recognition.onend = () => {
+      rec.onend = () => {
+        if (this.recognitionSessionId !== sessionId) return;
         this.isListening = false;
+        this.isStartingRecognition = false;
         onEnd();
       };
 
-      this.recognition.start();
-      this.isListening = true;
+      rec.start();
       return true;
     } catch (e: any) {
-      console.warn('Could not start speech recognition:', e?.message || e);
+      this.isStartingRecognition = false;
       this.isListening = false;
+      console.warn('[VoiceService] Could not start speech recognition:', e?.message || e);
       onError(e);
       return false;
     }
   }
 
   public stopListening(): void {
+    this.recognitionSessionId++;
+    this.isStartingRecognition = false;
+    this.isListening = false;
     if (this.recognition) {
       try {
+        this.recognition.onresult = null as any;
+        this.recognition.onerror = null as any;
+        this.recognition.onend = null as any;
+        this.recognition.onstart = null as any;
         this.recognition.abort();
-      } catch {
-        // ignore
-      }
-      this.isListening = false;
+      } catch {}
+      this.recognition = null;
     }
   }
 

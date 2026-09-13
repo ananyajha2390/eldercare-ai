@@ -96,6 +96,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
   // Error and retry states
   const [apiError, setApiError] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
+  const [hasMicPermission, setHasMicPermission] = useState<boolean>(false);
   const [lastUserUtterance, setLastUserUtterance] = useState<string>('');
 
   // Multi-turn conversation messages (strictly User <-> AI)
@@ -218,15 +219,34 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
     } catch {}
   };
 
-  // Request browser microphone stream to activate audio hardware
-  const requestMicrophoneAccess = async () => {
+  // Request and ensure browser microphone permission via getUserMedia
+  const ensureMicrophonePermission = async (): Promise<boolean> => {
+    if (typeof window === 'undefined') return false;
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      setMicError('Microphone is not supported in this browser. Please use the text input below.');
+      return false;
+    }
+
     try {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaStreamRef.current = stream;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Stop the temporary stream tracks immediately so the audio hardware is completely free and unblocked for SpeechRecognition
+      stream.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      setMicError(null);
+      setHasMicPermission(true);
+      return true;
+    } catch (err: any) {
+      console.warn('[RealCareCallModal] Microphone access check notice:', err);
+      setHasMicPermission(false);
+      const name = err?.name || '';
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        setMicError('Microphone permission was denied. Please allow microphone access in your browser or use the text box below.');
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        setMicError('No microphone detected. Please plug in a microphone or use the text box below.');
+      } else {
+        setMicError('Could not access microphone. Please check browser permissions or use the text box below.');
       }
-    } catch (err) {
-      console.warn('Microphone permission request note:', err);
+      return false;
     }
   };
 
@@ -257,8 +277,8 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         followUp: 'evaluating',
       });
 
-      // Request microphone early
-      requestMicrophoneAccess();
+      // Prompt for microphone permission early during call connecting
+      ensureMicrophonePermission();
 
       // Play short connection chime
       playRingtone();
@@ -368,8 +388,8 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
   };
 
   // Enters listening mode and continuously captures user speech
-  const enterListeningMode = () => {
-    if (!isCallActiveRef.current || isMuted || isProcessingRef.current) {
+  const enterListeningMode = async () => {
+    if (!isCallActiveRef.current || isMuted || isProcessingRef.current || voiceService.isSpeaking) {
       setVoiceState('Listening...');
       return;
     }
@@ -379,12 +399,31 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
     currentUtteranceRef.current = '';
     setInterimUserSpeech('');
 
+    // Ensure microphone permission is granted before starting recognition (Requirement 2)
+    let hasPerm = hasMicPermission;
+    if (!hasPerm) {
+      hasPerm = await ensureMicrophonePermission();
+    }
+
+    if (!hasPerm) {
+      // Permission not granted - micError is shown clearly (Requirement 16)
+      return;
+    }
+
     startContinuousRecognition();
   };
 
   // Start continuous speech recognition with debounce silence detection
   const startContinuousRecognition = () => {
-    if (!isCallActiveRef.current || isMuted || isProcessingRef.current) return;
+    if (
+      !isCallActiveRef.current ||
+      isMuted ||
+      isProcessingRef.current ||
+      voiceService.isSpeaking ||
+      !isListeningRef.current
+    ) {
+      return;
+    }
 
     try {
       voiceService.startListening(
@@ -400,8 +439,8 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
 
           if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
 
-          // Fast natural pause: 750ms if browser marked as final, 1200ms if interim speech
-          const delay = isFinal ? 750 : 1200;
+          // Natural conversational pause: 400ms when browser marked as final, 1200ms for interim speech
+          const delay = isFinal ? 400 : 1200;
           silenceTimerRef.current = setTimeout(() => {
             if (isCallActiveRef.current && !isProcessingRef.current && currentUtteranceRef.current.trim()) {
               handleSpeechFinished(currentUtteranceRef.current.trim());
@@ -411,14 +450,28 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         (err) => {
           const errType = err?.error || '';
           if (errType === 'not-allowed' || errType === 'permission-denied') {
+            setHasMicPermission(false);
             setMicError('Microphone permission required for AI conversation. Please allow microphone access or use the text box below.');
           } else if (errType !== 'no-speech' && errType !== 'aborted') {
-            console.warn('Recognition event notice:', errType);
+            console.warn('[RealCareCallModal] Recognition event notice:', errType);
           }
-          // If error occurs and not permanently blocked, keep listening mode active
-          if (isCallActiveRef.current && isListeningRef.current && !isMuted && !isProcessingRef.current && errType !== 'not-allowed') {
+          // If error occurs and not permanently blocked, keep listening mode active safely
+          if (
+            isCallActiveRef.current &&
+            isListeningRef.current &&
+            !isMuted &&
+            !isProcessingRef.current &&
+            !voiceService.isSpeaking &&
+            errType !== 'not-allowed'
+          ) {
             setTimeout(() => {
-              if (isCallActiveRef.current && isListeningRef.current && !isMuted && !isProcessingRef.current) {
+              if (
+                isCallActiveRef.current &&
+                isListeningRef.current &&
+                !isMuted &&
+                !isProcessingRef.current &&
+                !voiceService.isSpeaking
+              ) {
                 startContinuousRecognition();
               }
             }, 600);
@@ -426,10 +479,28 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         },
         () => {
           // onEnd
+          // If speech was in-progress before onend, finalize it immediately
+          if (currentUtteranceRef.current.trim() && !isProcessingRef.current) {
+            handleSpeechFinished(currentUtteranceRef.current.trim());
+            return;
+          }
+
           // If recognition ended but we are still in listening mode, restart seamlessly
-          if (isCallActiveRef.current && isListeningRef.current && !isMuted && !isProcessingRef.current) {
+          if (
+            isCallActiveRef.current &&
+            isListeningRef.current &&
+            !isMuted &&
+            !isProcessingRef.current &&
+            !voiceService.isSpeaking
+          ) {
             setTimeout(() => {
-              if (isCallActiveRef.current && isListeningRef.current && !isMuted && !isProcessingRef.current) {
+              if (
+                isCallActiveRef.current &&
+                isListeningRef.current &&
+                !isMuted &&
+                !isProcessingRef.current &&
+                !voiceService.isSpeaking
+              ) {
                 startContinuousRecognition();
               }
             }, 250);
@@ -437,7 +508,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         }
       );
     } catch (err) {
-      console.warn('Speech recognition start notice:', err);
+      console.warn('[RealCareCallModal] Speech recognition start notice:', err);
     }
   };
 
@@ -458,6 +529,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
     }
     isListeningRef.current = false;
     currentUtteranceRef.current = '';
+    setInterimUserSpeech('');
 
     try {
       voiceService.stopListening();
@@ -484,7 +556,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
     setApiError(null);
     setLastUserUtterance(userText);
 
-    // 2. Append real user response to transcript (prevent duplicate turns on retry)
+    // 2. Append real user response to transcript (Requirement 4: immediately add USER message to conversation)
     let currentHistory = [...messagesRef.current];
     const lastMsg = currentHistory[currentHistory.length - 1];
     if (!lastMsg || lastMsg.speaker !== 'user' || lastMsg.text !== userText) {
@@ -492,7 +564,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         id: `usr-${Date.now()}`,
         speaker: 'user',
         text: userText,
-        timestamp: 'Just now',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       currentHistory = [...currentHistory, userTurn];
       messagesRef.current = currentHistory;
@@ -592,7 +664,7 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
         id: `ai-${Date.now()}`,
         speaker: 'ai',
         text: aiReply,
-        timestamp: 'Just now',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
 
       const updatedHistory = [...messagesRef.current, aiTurn];
@@ -980,9 +1052,12 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
                 <span className="flex-1 pr-2">{micError}</span>
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     setMicError(null);
-                    startContinuousRecognition();
+                    const granted = await ensureMicrophonePermission();
+                    if (granted && isCallActiveRef.current) {
+                      enterListeningMode();
+                    }
                   }}
                   className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-semibold text-[11px] transition-colors cursor-pointer"
                 >
@@ -1031,8 +1106,10 @@ export const RealCareCallModal: React.FC<RealCareCallModalProps> = ({
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (typedInput.trim() && voiceState !== 'Processing...') {
-                    handleSpeechFinished(typedInput.trim());
+                  const text = typedInput.trim();
+                  if (text && voiceState !== 'Processing...') {
+                    setTypedInput('');
+                    handleSpeechFinished(text);
                   }
                 }}
                 className="flex items-center gap-2"
